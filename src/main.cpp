@@ -7,36 +7,67 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
+#include <algorithm>
 using namespace std;
 
 
-bool parseGps(ifstream &gpsFile, string &rmcLine, int &rmcTime){
+class Gga{
+public:
+	unsigned time;
+	double latitude , longitude, altitude;
+};
+
+bool parseGps(ifstream &gpsFile, string &ggaLine, Gga &gga){
 	std::string line;
 	while (getline(gpsFile, line))
 	{
 		unsigned time, h, mn, s, ms;
-		if(sscanf(line.c_str(), "$GPRMC,%u.%u", &time, &ms) != 2) continue;
+		double lat, lon, altitude;
+		char latSign, lonSign;
+		double dummyD;
+		unsigned dummyU;
+		char dummy[100];
+//		cout << "matches " << sscanf(line.c_str(), "$GPGGA,%u.%u,%lf,%c,%lf,%c,%s,%s,%s,%lf", &time, &ms, &lat, &latSign, &lon, &lonSign, dummy, dummy, dummy, &altitude) << endl;
+		if(sscanf(line.c_str(), "$GPGGA,%u.%u,%lf,%c,%lf,%c,%u,%u,%lf,%lf", &time, &ms, &lat, &latSign, &lon, &lonSign, &dummyU, &dummyU, &dummyD, &altitude) != 10) continue;
 		ms *= 10;
 		s = time % 100; time /= 100;
 		mn = time % 100; time /= 100;
 		h = time;
-		rmcLine = line;
-		rmcTime = ms + 1000*(s + 60*(mn + 60*(h)));
+		ggaLine = line;
+
+		if(latSign != 'N') lat *= -1;
+		if(lonSign != 'E') lon *= -1;
+		lat /= 100;
+		lon /= 100;
+
+		gga.altitude = altitude;
+		gga.longitude = lon;
+		gga.latitude = lat;
+		gga.time = ms + 1000*(s + 60*(mn + 60*(h)));
+
 		return true;
 
 	}
 	return false;
 }
 
+
+string zeroPad(string in, int finalLength){
+	string ret = in;
+	while(ret.length() < finalLength) ret = string("0") + ret;
+	return ret;
+}
+
 int main(int argc, char** argv)
 {
-    assert(argc == 2);
+    assert(argc == 3);
     string imageDir = string(argv[1]);
+    string targetDir = string(argv[2]);
 
     ifstream gpsFile(imageDir + "/gps.txt");
-    string gpsRmc;
-    int gpsTime;
-    assert(parseGps(gpsFile, gpsRmc, gpsTime));
+    string gpsGga;
+    Gga gga;
+    assert(parseGps(gpsFile, gpsGga, gga));
 
     int i = 1;
     while(true){
@@ -54,29 +85,52 @@ int main(int argc, char** argv)
 			imageTime = ms + 1000*(s + 60*(mn + 60*(h))) - 3600*1000;
 			break;
     	}
-    	while(gpsTime < imageTime){
-    	    if(!parseGps(gpsFile, gpsRmc, gpsTime)){
+    	while(gga.time < imageTime){
+    	    if(!parseGps(gpsFile, gpsGga, gga)){
     	    	cout << "Stoped at image " << i << endl;
     	    	return 0;
     	    }
     	}
-    	cout << gpsTime << " " << imageTime << endl;
+    	cout << gga.time << " " << imageTime << endl;
 
 
     	for(int cameraId = 0;cameraId < 2;cameraId++){
     		string path = imageDir + "/img_" + to_string(cameraId) + "_" + to_string(i) + ".txt";
         	std::ifstream ifs(path);
         	string str;
+        	string ofsFileName;
+			string date(100, ' ');
+			string time(100, ' ');
         	while(!ifs.eof()){
         		string line;
     			getline(ifs, line);
-    			if(line.rfind("RMC:", 0) != 0 && line.length() != 0){
+    			if(line.length() != 0){
     				str += line + "\n";
     			}
+				if(sscanf(line.c_str(), "Capture Time CPU: %s %s", &date[0], &time[0]) == 2){
+					date.erase(remove(date.begin(), date.end(), '-'), date.end());
+
+
+//					time.erase(remove(time.begin(), time.end(), ':'), time.end());
+					ofsFileName = string(date.c_str()) + "-";
+					istringstream iss(time);
+					string tmp;
+					getline(iss, tmp, ':'); ofsFileName += zeroPad(tmp, 2);
+					getline(iss, tmp, ':'); ofsFileName += zeroPad(tmp, 2);
+					getline(iss, tmp, ':'); ofsFileName += zeroPad(tmp, 2);
+					getline(iss, tmp, ':'); ofsFileName += "-" + zeroPad(tmp, 3);
+					getline(iss, tmp, ':'); ofsFileName += zeroPad(string(tmp.c_str()),3);
+					ofsFileName += ".txt";
+				}
         	}
-        	str += "RMC: " + gpsRmc + "\n";
+        	str += "GGA: " + gpsGga + "\n";
+        	str += "latitude: " + to_string(gga.latitude) + "\n";
+        	str += "longitude: " + to_string(gga.longitude) + "\n";
+        	str += "altitude: " + to_string(gga.altitude) + "\n";
+
+
         	ifs.close();
-        	std::ofstream ofs (path, std::ofstream::out);
+        	std::ofstream ofs (targetDir + "/" + ofsFileName, std::ofstream::out);
 			ofs << str;
 			ofs.close();
     	}
